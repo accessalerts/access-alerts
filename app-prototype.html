@@ -458,7 +458,11 @@
     fetch('/api/stock-bars?symbol=' + encodeURIComponent(sym) + '&limit=60')
       .then(function (r) { if (!r.ok) throw new Error('bad response'); return r.json(); })
       .then(function (data) {
-        barsCache[sym] = (data.bars && data.bars.length) ? data.bars : null;
+        // Need at least a few bars for a real candlestick chart to make
+        // sense — a single bar renders as one giant stretched block, so
+        // treat that as "not enough data" and fall back to the decorative
+        // chart instead of showing something broken-looking.
+        barsCache[sym] = (data.bars && data.bars.length >= 5) ? data.bars : null;
         if (['detail', 'paper', 'charts'].indexOf(state.screen) !== -1) render();
       })
       .catch(function () { barsCache[sym] = null; });
