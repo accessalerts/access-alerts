@@ -42,6 +42,14 @@ export default async function handler(req, res) {
 
   const timeframe = req.query.timeframe === "1Hour" ? "1Hour" : "1Day";
 
+  // Without an explicit "start" date, Alpaca's bars endpoint only returns
+  // bars from the current trading day onward — which looks like "1 bar"
+  // for a daily chart. Explicitly ask for a wide-enough window (6 months
+  // back is plenty for a 60-bar daily chart) so real history comes back.
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - 180);
+  const start = startDate.toISOString().slice(0, 10);
+
   const headers = {
     "APCA-API-KEY-ID": keyId,
     "APCA-API-SECRET-KEY": secretKey,
@@ -50,7 +58,7 @@ export default async function handler(req, res) {
   try {
     const url =
       `${ALPACA_BARS_URL}/${encodeURIComponent(symbol)}/bars` +
-      `?timeframe=${timeframe}&limit=${limit}&adjustment=raw&sort=asc`;
+      `?timeframe=${timeframe}&start=${start}&limit=${limit}&adjustment=raw&sort=asc`;
     const resp = await fetch(url, { headers });
 
     if (!resp.ok) {
