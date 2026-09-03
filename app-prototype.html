@@ -93,6 +93,10 @@
 
   .spark { width: 60px; height: 24px; }
 
+  /* ---------- MULTI-CHART GRID ---------- */
+  .charts-grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 16px; }
+  .chart-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+
   /* ---------- BUTTONS / FORM ---------- */
   .field { margin-bottom: 12px; }
   .field label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 6px; }
@@ -175,6 +179,49 @@
 
   .toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); background: #14182c; border: 1px solid var(--glass-border); padding: 10px 16px; border-radius: 10px; font-size: 12.5px; opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 999; max-width: 340px; text-align: center; line-height: 1.4; }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(-6px); }
+
+  /* ================= DESKTOP LAYOUT ================= */
+  @media (min-width: 900px) {
+    .lab { display: none; }
+    body { padding: 26px; align-items: stretch; justify-content: flex-start; }
+    .device {
+      width: 100%; max-width: 1240px; height: min(88vh, 860px); max-height: none;
+      margin: 0 auto; border-radius: 18px; padding: 0;
+      box-shadow: 0 30px 90px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+    .screen { border-radius: 18px; flex-direction: row; }
+    .notch { display: none; }
+
+    .sidebar {
+      width: 226px; flex-shrink: 0; background: rgba(255,255,255,0.025);
+      border-right: 1px solid var(--glass-border);
+      display: flex; flex-direction: column; padding: 22px 14px;
+    }
+    .sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 28px; }
+    .sidebar-brand .name { font-family: var(--font-display); font-weight: 600; font-size: 16px; }
+    .sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
+    .sidebar-navbtn {
+      display: flex; align-items: center; gap: 13px; padding: 11px 12px; border-radius: 10px;
+      font-size: 13.5px; color: var(--text-dim); cursor: pointer;
+    }
+    .sidebar-navbtn .ic { font-size: 16px; width: 18px; text-align: center; flex-shrink: 0; }
+    .sidebar-navbtn.active { background: var(--glass-2); color: var(--text); font-weight: 600; }
+    .sidebar-navbtn:hover { background: var(--glass); }
+    .sidebar-foot { margin-top: auto; padding: 10px 10px 2px; font-size: 10.5px; color: var(--text-dim); }
+
+    .desktop-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .demo-banner { padding-top: 16px; }
+    .content { padding: 24px 40px 34px; max-width: 1000px; }
+
+    /* a little more breathing room / bigger type where a phone screen had to be tight */
+    h2.screen-title { font-size: 26px; }
+    .tick { font-size: 15px; }
+    .price { font-size: 15px; }
+    .detail-price { font-size: 40px; }
+    .stat-grid { grid-template-columns: repeat(4, 1fr); }
+    .row { padding: 13px 4px; }
+    .charts-grid-2, .charts-grid-4 { grid-template-columns: repeat(2, 1fr); }
+  }
 </style>
 </head>
 <body>
@@ -219,6 +266,10 @@
     showNewAlert: false,
     newAlert: { type: 'price', priceMode: 'target', direction: 'above', pctDirection: 'up', extHours: true },
     logoColor: '#34C77B',
+    liveData: false,
+    desktop: (typeof window.matchMedia === 'function') && window.matchMedia('(min-width: 900px)').matches,
+    chartsLayout: 4,
+    chartsSyms: ['AAPL', 'TSLA', 'NVDA', 'MSFT'],
     milo: [
       { who: 'bot', text: "Hey, I'm Milo — your stock buddy. Ask me to explain a term, a filing, or what's moving in your portfolio." }
     ],
@@ -365,6 +416,8 @@
     return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '"><path d="' + d + '" fill="none" stroke="' + (up ? 'var(--up)' : 'var(--down)') + '" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   }
 
+  // Decorative fallback chart — used only before real bars have loaded yet,
+  // or if the real-data fetch fails, so the UI never shows a blank box.
   function candles(seed) {
     var w = 8, gap = 3, price = 100;
     var bars = [];
@@ -391,7 +444,74 @@
       svg += '<rect x="' + x + '" y="' + Math.min(yO, yC).toFixed(1) + '" width="' + w + '" height="' + Math.max(2, Math.abs(yO - yC)).toFixed(1) + '" fill="' + color + '"/>';
       x += w + gap;
     });
-    return '<svg viewBox="0 0 ' + x + ' ' + H + '" width="100%" height="150" preserveAspectRatio="none">' + svg + '</svg>';
+    return '<div style="display:block;"><svg viewBox="0 0 ' + x + ' ' + H + '" width="100%" height="150" preserveAspectRatio="none" style="display:block;">' + svg + '</svg></div>';
+  }
+
+  // ---------- REAL CHARTS ----------
+  // symbol -> real bars array once loaded, 'loading' while in flight, or
+  // null if the fetch failed (falls back to the decorative chart above).
+  var barsCache = {};
+
+  function fetchBars(sym) {
+    if (barsCache[sym]) return; // already loaded, loading, or failed — don't re-fetch
+    barsCache[sym] = 'loading';
+    fetch('/api/stock-bars?symbol=' + encodeURIComponent(sym) + '&limit=60')
+      .then(function (r) { if (!r.ok) throw new Error('bad response'); return r.json(); })
+      .then(function (data) {
+        barsCache[sym] = (data.bars && data.bars.length) ? data.bars : null;
+        if (['detail', 'paper', 'charts'].indexOf(state.screen) !== -1) render();
+      })
+      .catch(function () { barsCache[sym] = null; });
+  }
+
+  // Real candlestick chart from actual historical bars, with a live price
+  // tag pinned to the current price on the right edge — like the floating
+  // price marker on real trading platforms.
+  function candlesReal(sym, bars, height) {
+    height = height || 150;
+    var w = 8, gap = 3;
+    var recent = bars.slice(-40);
+    var liveP = tickers[sym] ? tickers[sym].price : recent[recent.length - 1].c;
+    // Scale is based on the historical bars only, so the candlesticks stay
+    // readable. If the live price happens to be an outlier (a big overnight
+    // jump, a stale mock, etc.), we pin its marker to the edge below rather
+    // than stretching the whole chart to fit one point.
+    var lows = recent.map(function (b) { return b.l; });
+    var highs = recent.map(function (b) { return b.h; });
+    var min = Math.min.apply(null, lows), max = Math.max.apply(null, highs);
+    var range = (max - min) || 1;
+    var H = 100, pad = 8;
+    function y(v) { return pad + (1 - (v - min) / range) * (H - pad * 2); }
+    var x = 0, svg = '';
+    recent.forEach(function (b) {
+      var up = b.c >= b.o;
+      var color = up ? 'var(--up)' : 'var(--down)';
+      var yO = y(b.o), yC = y(b.c), yH = y(b.h), yL = y(b.l);
+      svg += '<line x1="' + (x + w/2) + '" y1="' + yH.toFixed(1) + '" x2="' + (x + w/2) + '" y2="' + yL.toFixed(1) + '" stroke="' + color + '" stroke-width="1"/>';
+      svg += '<rect x="' + x + '" y="' + Math.min(yO, yC).toFixed(1) + '" width="' + w + '" height="' + Math.max(1.2, Math.abs(yO - yC)).toFixed(1) + '" fill="' + color + '"/>';
+      x += w + gap;
+    });
+    var totalW = Math.max(x, 1);
+    var lastClose = recent[recent.length - 1].c;
+    var priceColor = liveP >= lastClose ? 'var(--up)' : 'var(--down)';
+    var priceY = Math.min(H - pad, Math.max(pad, y(liveP))); // clamp to the chart's own scale
+    svg += '<line x1="0" y1="' + priceY.toFixed(1) + '" x2="' + totalW + '" y2="' + priceY.toFixed(1) + '" stroke="' + priceColor + '" stroke-width="0.7" stroke-dasharray="2,2" opacity="0.75"/>';
+    var tagTopPct = Math.min(94, Math.max(6, (priceY / H) * 100)).toFixed(1);
+    return (
+      '<div style="position:relative;display:block;">' +
+        '<svg viewBox="0 0 ' + totalW + ' ' + H + '" width="100%" height="' + height + '" preserveAspectRatio="none" style="display:block;">' + svg + '</svg>' +
+        '<div style="position:absolute;right:0;top:' + tagTopPct + '%;transform:translateY(-50%);background:' + priceColor + ';color:#06180F;font-family:var(--font-mono);font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px 0 0 4px;white-space:nowrap;">' + fmt(liveP) + '</div>' +
+      '</div>'
+    );
+  }
+
+  // What every chart call site should actually use: real data once it's
+  // loaded, the decorative placeholder otherwise — never a blank box.
+  function chartFor(sym, height) {
+    var bars = barsCache[sym];
+    if (bars === undefined) fetchBars(sym);
+    if (bars && bars.length) return candlesReal(sym, bars, height);
+    return candles(sym.length);
   }
 
   // ---------- SCREENS ----------
@@ -456,6 +576,48 @@
     );
   }
 
+  // Multi-chart layout — mainly meant for the desktop sidebar, where there's
+  // room to watch two or four real-time charts side by side at once, the
+  // way most desktop trading setups are actually used.
+  function screenCharts() {
+    var syms = state.chartsSyms.slice(0, state.chartsLayout);
+    Object.keys(tickers).forEach(function (s) {
+      if (syms.length < state.chartsLayout && syms.indexOf(s) === -1) syms.push(s);
+    });
+    return (
+      topbar('Charts') +
+      '<div class="content">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">' +
+          '<h2 class="screen-title" style="margin:0;">Charts</h2>' +
+          '<div class="chip-row" style="padding:0;">' +
+            [2, 4].map(function (n) {
+              return '<div class="chip' + (state.chartsLayout === n ? ' active' : '') + '" onclick="app.setChartsLayout(' + n + ')">' + n + ' up</div>';
+            }).join('') +
+          '</div>' +
+        '</div>' +
+        '<div class="charts-grid charts-grid-' + state.chartsLayout + '">' +
+          syms.map(function (sym, i) {
+            var t = tickers[sym];
+            var up = t.chg >= 0;
+            return (
+              '<div class="glass chart-panel">' +
+                '<div class="chart-panel-head">' +
+                  '<div class="chip-row" style="padding:0;">' +
+                    Object.keys(tickers).map(function (s) {
+                      return '<div class="chip' + (sym === s ? ' active' : '') + '" onclick="app.setChartsSym(' + i + ',\'' + s + '\')">' + s + '</div>';
+                    }).join('') +
+                  '</div>' +
+                  '<div class="price-block"><div class="price">' + fmt(t.price) + '</div><div class="chg ' + (up ? 'up' : 'down') + '">' + (up ? '+' : '') + t.chg.toFixed(2) + ' (' + fmtPct(t.pct) + ')</div></div>' +
+                '</div>' +
+                '<div style="margin-top:10px;">' + chartFor(sym, state.chartsLayout === 4 ? 150 : 230) + '</div>' +
+              '</div>'
+            );
+          }).join('') +
+        '</div>' +
+      '</div>'
+    );
+  }
+
   function screenDetail() {
     var sym = state.detailSym, t = tickers[sym];
     var up = t.chg >= 0;
@@ -465,7 +627,7 @@
       '<div class="content">' +
         '<div class="detail-price">' + fmt(t.price) + '</div>' +
         '<div class="detail-chg ' + (up ? 'up' : 'down') + '">' + (up ? '+' : '') + t.chg.toFixed(2) + ' (' + fmtPct(t.pct) + ') today</div>' +
-        '<div class="glass" style="margin-top:14px;">' + candles(sym.length) + '</div>' +
+        '<div class="glass" style="margin-top:14px;">' + chartFor(sym) + '</div>' +
         '<div class="tf-row">' + tfs.map(function (tf) {
           return '<div class="tf' + (state.timeframe === tf ? ' active' : '') + '" onclick="app.setTf(\'' + tf + '\')">' + tf + '</div>';
         }).join('') + '</div>' +
@@ -542,7 +704,7 @@
       '<div class="content">' +
         '<div style="display:flex;align-items:center;gap:8px;">' +
           '<span style="font-family:var(--font-mono);font-size:10px;letter-spacing:0.06em;background:var(--accent);color:#06180F;padding:3px 8px;border-radius:999px;font-weight:700;">PRACTICE</span>' +
-          '<span style="font-size:11px;color:var(--text-dim);">15-min delayed · paper money only, no real trades</span>' +
+          '<span style="font-size:11px;color:var(--text-dim);">Real-time prices via IEX · paper money only, no real trades</span>' +
         '</div>' +
         '<div class="chip-row" style="margin-top:12px;">' +
           Object.keys(tickers).map(function (s) {
@@ -551,7 +713,7 @@
         '</div>' +
         '<div class="detail-price" style="margin-top:10px;">' + fmt(t.price) + '</div>' +
         '<div class="detail-chg ' + (up ? 'up' : 'down') + '">' + (up ? '+' : '') + t.chg.toFixed(2) + ' (' + fmtPct(t.pct) + ') today</div>' +
-        '<div class="glass" style="margin-top:14px;">' + candles(sym.length) + '</div>' +
+        '<div class="glass" style="margin-top:14px;">' + chartFor(sym) + '</div>' +
         '<div class="section-label">Practice alerts</div>' +
         '<div class="glass">' +
           paperAlerts.map(function (a) {
@@ -868,7 +1030,7 @@
 
   function topbar(title, back) {
     return (
-      '<div class="demo-banner">Private preview · simulated data · not connected to a brokerage</div>' +
+      '<div class="demo-banner">' + (state.liveData ? 'Private preview · real-time prices via IEX · paper trading only, not connected to a brokerage' : 'Private preview · simulated data · not connected to a brokerage') + '</div>' +
       '<div class="topbar">' +
         '<div class="brand">' +
           (back ? '<div class="icon-btn" onclick="app.go(\'watchlist\')">←</div>' : '<div class="aa-logo" onclick="app.cycleLogo()">' + aaLogoSvg(state.logoColor, 16) + '</div>') +
@@ -882,6 +1044,7 @@
   var screens = {
     signin: screenSignIn,
     watchlist: screenWatchlist,
+    charts: screenCharts,
     detail: screenDetail,
     search: screenSearch,
     portfolio: screenPortfolio,
@@ -895,6 +1058,19 @@
     { key: 'watchlist', ic: '☰', label: 'Watch' },
     { key: 'search', ic: '⌕', label: 'Search' },
     { key: 'portfolio', ic: '◔', label: 'Portfolio' },
+    { key: 'milo', ic: '✦', label: 'Milo' },
+    { key: 'settings', ic: '⚙', label: 'Settings' }
+  ];
+
+  // Desktop sidebar has room for a couple more direct entry points than the
+  // 5-icon mobile tab bar does.
+  var navItemsDesktop = [
+    { key: 'watchlist', ic: '☰', label: 'Watchlist' },
+    { key: 'charts', ic: '📈', label: 'Charts' },
+    { key: 'alerts', ic: '🔔', label: 'Alerts' },
+    { key: 'portfolio', ic: '◔', label: 'Portfolio' },
+    { key: 'paper', ic: '🎓', label: 'Paper Trading' },
+    { key: 'search', ic: '⌕', label: 'Search' },
     { key: 'milo', ic: '✦', label: 'Milo' },
     { key: 'settings', ic: '⚙', label: 'Settings' }
   ];
@@ -913,13 +1089,32 @@
       focusInfo = { id: active.id, value: active.value, selStart: active.selectionStart, selEnd: active.selectionEnd };
     }
 
-    var html = screens[state.screen]();
+    var screenHtml = screens[state.screen]();
     var showNav = state.screen !== 'signin';
-    if (showNav) {
-      var activeKey = (state.screen === 'detail' || state.screen === 'alerts' || state.screen === 'paper') ? 'watchlist' : state.screen;
-      html += '<div class="navbar">' + navItems.map(function (n) {
-        return '<div class="navbtn' + (n.key === activeKey ? ' active' : '') + '" onclick="app.go(\'' + n.key + '\')"><div class="ic">' + n.ic + '</div>' + n.label + '</div>';
-      }).join('') + '</div>';
+    var html;
+
+    if (state.desktop) {
+      root.classList.add('is-desktop');
+      var deskActiveKey = state.screen === 'detail' ? 'watchlist' : state.screen;
+      var sidebarHtml = !showNav ? '' : (
+        '<div class="sidebar">' +
+          '<div class="sidebar-brand">' + aaLogoSvg(state.logoColor, 18) + '<span class="name">Access Alerts</span></div>' +
+          '<div class="sidebar-nav">' + navItemsDesktop.map(function (n) {
+            return '<div class="sidebar-navbtn' + (n.key === deskActiveKey ? ' active' : '') + '" onclick="app.go(\'' + n.key + '\')"><div class="ic">' + n.ic + '</div>' + n.label + '</div>';
+          }).join('') + '</div>' +
+          '<div class="sidebar-foot">Desktop preview</div>' +
+        '</div>'
+      );
+      html = sidebarHtml + '<div class="desktop-main">' + screenHtml + '</div>';
+    } else {
+      root.classList.remove('is-desktop');
+      html = screenHtml;
+      if (showNav) {
+        var activeKey = (state.screen === 'detail' || state.screen === 'alerts' || state.screen === 'paper') ? 'watchlist' : state.screen;
+        html += '<div class="navbar">' + navItems.map(function (n) {
+          return '<div class="navbtn' + (n.key === activeKey ? ' active' : '') + '" onclick="app.go(\'' + n.key + '\')"><div class="ic">' + n.ic + '</div>' + n.label + '</div>';
+        }).join('') + '</div>';
+      }
     }
     root.innerHTML = html;
     if (scrollTop) {
@@ -938,14 +1133,51 @@
     }
   }
 
+  // ---------- LIVE DATA ----------
+  // Pulls real prices from our own backend (/api/stock-quote), which itself
+  // calls Alpaca server-side so the API keys never reach the browser. If this
+  // fails (e.g. opened as a local file, or the API hiccups), we silently fall
+  // back to the simulated jitter below so the demo never breaks.
+  function fetchLiveQuotes() {
+    var symbols = Object.keys(tickers).join(',');
+    fetch('/api/stock-quote?symbols=' + encodeURIComponent(symbols))
+      .then(function (r) { if (!r.ok) throw new Error('bad response'); return r.json(); })
+      .then(function (data) {
+        var gotAny = false;
+        Object.keys(tickers).forEach(function (sym) {
+          var d = data[sym];
+          if (d && typeof d.price === 'number') {
+            var t = tickers[sym];
+            t.price = d.price;
+            t.base = d.price; // re-anchor the jitter animation to the real price
+            if (typeof d.chg === 'number') t.chg = d.chg;
+            if (typeof d.pct === 'number') t.pct = d.pct * 100;
+            gotAny = true;
+          }
+        });
+        if (gotAny) {
+          state.liveData = true;
+          if (['watchlist','detail','portfolio','search','paper'].indexOf(state.screen) !== -1) render();
+        }
+      })
+      .catch(function () { /* stay in simulated mode, no error shown to the user */ });
+  }
+  fetchLiveQuotes();
+  setInterval(fetchLiveQuotes, 20000); // refresh real prices every 20s
+
   // ---------- LIVE SIM ----------
+  // Small ambient wobble so the UI feels alive between real-price refreshes.
+  // Once fetchLiveQuotes() succeeds, this wobbles around the real price
+  // (t.base gets re-anchored above) instead of a hardcoded fake one.
   setInterval(function () {
     Object.keys(tickers).forEach(function (sym) {
       var t = tickers[sym];
       var move = (Math.random() - 0.5) * 0.6;
       t.price = Math.max(1, t.price + move);
-      t.chg = t.price - t.base;
-      t.pct = (t.chg / t.base) * 100;
+      if (!state.liveData) {
+        t.chg = t.price - t.base;
+        t.pct = (t.chg / t.base) * 100;
+      }
     });
     checkPaperOrderFills();
     if (['watchlist','detail','portfolio','search','paper'].indexOf(state.screen) !== -1) render();
@@ -998,6 +1230,8 @@
       render();
     },
     setAlertsTab: function (t) { state.alertsTab = t; render(); },
+    setChartsLayout: function (n) { state.chartsLayout = n; render(); },
+    setChartsSym: function (i, sym) { state.chartsSyms[i] = sym; render(); },
     toggleNewAlertForm: function () {
       state.showNewAlert = !state.showNewAlert;
       if (state.showNewAlert) state.newAlert = { type: 'price', priceMode: 'target', direction: 'above', pctDirection: 'up', extHours: true };
@@ -1097,6 +1331,18 @@
       render();
     }
   };
+
+  // Switch live between mobile and desktop layouts if the window is resized
+  // across the breakpoint (or the device rotates), rather than only checking once on load.
+  if (typeof window.matchMedia === 'function') {
+    var desktopMq = window.matchMedia('(min-width: 900px)');
+    var handleDesktopChange = function (e) {
+      state.desktop = e.matches;
+      render(false);
+    };
+    if (desktopMq.addEventListener) desktopMq.addEventListener('change', handleDesktopChange);
+    else if (desktopMq.addListener) desktopMq.addListener(handleDesktopChange); // older Safari
+  }
 
   render();
 })();
